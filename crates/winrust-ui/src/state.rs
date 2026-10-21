@@ -25,6 +25,9 @@ pub struct PersistedState {
     /// The folders of the local library.
     #[serde(default)]
     pub library_roots: Vec<PathBuf>,
+    /// The tab that was open when the player was closed.
+    #[serde(default)]
+    pub last_view: Option<String>,
 }
 
 /// The default master volume.
@@ -80,6 +83,7 @@ mod tests {
             equalizer: vec![1.0, 2.0],
             equalizer_preamp: 3.0,
             library_roots: vec![PathBuf::from("/music")],
+            last_view: Some("Library".to_string()),
         };
 
         let json = serde_json::to_string(&state).unwrap();

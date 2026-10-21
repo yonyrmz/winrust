@@ -22,3 +22,6 @@ Thumbs.db
 *.ogg
 *.opus
 *.wav
+
+# Local test material
+/test-music

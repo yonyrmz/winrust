@@ -217,6 +217,14 @@ impl WinrustApp {
             }
         }
 
+        if let Some(view) = state.last_view.as_deref() {
+            self.view = match view {
+                "Library" => View::Library,
+                "Queue" => View::Queue,
+                _ => View::Online,
+            };
+        }
+
         if let Some(engine) = self.engine.as_ref() {
             engine.set_volume(self.volume);
             engine.set_balance(self.balance);
@@ -233,6 +241,7 @@ impl WinrustApp {
             equalizer: self.equalizer.bands.to_vec(),
             equalizer_preamp: self.equalizer.preamp,
             library_roots: self.library.roots.clone(),
+            last_view: Some(self.view.label().to_string()),
         };
 
         if let Err(err) = crate::state::save(&state) {
