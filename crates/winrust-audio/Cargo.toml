@@ -15,8 +15,11 @@ winrust-dsp = { workspace = true }
 cpal = "0.18"
 symphonia = { version = "0.5", features = ["all"] }
 rubato = "5.0"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
-bytes = "1"
+ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 parking_lot = "0.12"
+
+[dev-dependencies]
+winrust-ytmusic = { workspace = true }
+tokio = { workspace = true }

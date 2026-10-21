@@ -35,7 +35,12 @@ pub enum MediaSource {
     /// A file on disk.
     File(PathBuf),
     /// A remote HTTP(S) URL.
-    Http(String),
+    Http {
+        /// The URL of the media.
+        url: String,
+        /// An optional container hint, such as `webm` or `mp4`.
+        extension: Option<String>,
+    },
 }
 
 impl MediaSource {
@@ -46,7 +51,18 @@ impl MediaSource {
 
     /// Builds an HTTP source.
     pub fn http(url: impl Into<String>) -> Self {
-        MediaSource::Http(url.into())
+        MediaSource::Http {
+            url: url.into(),
+            extension: None,
+        }
+    }
+
+    /// Builds an HTTP source with a container hint.
+    pub fn http_with_extension(url: impl Into<String>, extension: Option<String>) -> Self {
+        MediaSource::Http {
+            url: url.into(),
+            extension: extension.map(|ext| ext.trim_start_matches('.').to_ascii_lowercase()),
+        }
     }
 
     /// Returns the file extension of the source, if any.
@@ -59,7 +75,12 @@ impl MediaSource {
                 .extension()
                 .and_then(|ext| ext.to_str())
                 .map(|ext| ext.to_ascii_lowercase()),
-            MediaSource::Http(url) => {
+            MediaSource::Http { url, extension } => {
+                if let Some(extension) = extension {
+                    if !extension.is_empty() {
+                        return Some(extension.clone());
+                    }
+                }
                 let path = url.split(['?', '#']).next().unwrap_or(url);
                 let name = path.rsplit('/').next().unwrap_or_default();
                 match name.rsplit_once('.') {
@@ -91,7 +112,7 @@ impl MediaSource {
                     })?;
                 Ok(buffer)
             }
-            MediaSource::Http(url) => fetch_http(url),
+            MediaSource::Http { url, .. } => fetch_http(url),
         }
     }
 
@@ -105,7 +126,7 @@ impl MediaSource {
                 })?;
                 Ok(Box::new(file))
             }
-            MediaSource::Http(url) => {
+            MediaSource::Http { url, .. } => {
                 let bytes = fetch_http(url)?;
                 Ok(Box::new(Cursor::new(bytes)))
             }
@@ -114,28 +135,28 @@ impl MediaSource {
 }
 
 /// Downloads an HTTP(S) resource into memory.
+///
+/// The client is deliberately blocking: the decoder runs on its own thread,
+/// so there is no need for an asynchronous stack here.
 fn fetch_http(url: &str) -> Result<Vec<u8>, SourceError> {
-    let client = reqwest::blocking::Client::builder()
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) winrust/0.1")
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
+    let mut response = ureq::get(url)
+        .header(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+             (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        )
+        .call()
         .map_err(|err| SourceError::Download(err.to_string()))?;
 
-    let response = client
-        .get(url)
-        .send()
-        .map_err(|err| SourceError::Download(err.to_string()))?
-        .error_for_status()
+    let body = response
+        .body_mut()
+        .read_to_vec()
         .map_err(|err| SourceError::Download(err.to_string()))?;
 
-    let bytes = response
-        .bytes()
-        .map_err(|err| SourceError::Download(err.to_string()))?;
-
-    if bytes.is_empty() {
+    if body.is_empty() {
         return Err(SourceError::Empty);
     }
-    Ok(bytes.to_vec())
+    Ok(body)
 }
 
 #[cfg(test)]

@@ -94,6 +94,25 @@ crates/
   from scratch at runtime; third party `.wsz` skins are provided by the user
   and remain the property of their authors.
 
+## How the YouTube Music backend works
+
+There is no public API, so winrust drives `yt-dlp` in two steps:
+
+1. **Search** — `yt-dlp` is pointed at the YouTube Music search page and
+   limited with `--playlist-end`, which keeps the request bounded. If that
+   fails, the generic `ytsearch` is used as a fallback.
+2. **Resolve** — the video id is turned into a direct media URL. Several
+   player clients (`web_embedded`, `mweb`, …) are tried in turn, because
+   YouTube blocks some of them depending on the network.
+
+The AAC stream in an MP4 container is preferred, because the decoders handle
+it best; Opus in WebM is used as a fallback. Direct URLs expire after a few
+hours, so they are resolved again every time a track is played.
+
+YouTube sometimes answers with *"Sign in to confirm you're not a bot"*. In
+that case the error is shown in the interface; passing cookies to `yt-dlp`
+(for example with `--cookies-from-browser`) usually solves it.
+
 ## License
 
 [MIT](LICENSE)

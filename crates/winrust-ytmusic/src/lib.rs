@@ -45,7 +45,29 @@ pub enum YtMusicError {
     /// The search returned no results.
     #[error("no results found")]
     Empty,
+    /// YouTube asked for a sign-in to confirm that the request is not a bot.
+    #[error("YouTube asked for a sign-in to confirm you are not a bot; try --cookies-from-browser or a different network")]
+    BotCheck,
 }
+
+/// The format selector used when a stream is resolved.
+///
+/// AAC in an MP4 container is preferred because it is widely supported by
+/// the decoders, Opus in WebM is used as a fallback.
+pub const FORMAT_SELECTOR: &str = "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best";
+
+/// The player clients that are tried when a stream is resolved.
+///
+/// YouTube applies a bot check to some of its clients depending on the
+/// network the request comes from, so several are tried in turn.
+pub const PLAYER_CLIENTS: [&str; 6] = [
+    "web_embedded",
+    "mweb",
+    "web_safari",
+    "ios",
+    "tv",
+    "android_vr",
+];
 
 /// A resolved, directly playable media stream.
 #[derive(Debug, Clone, PartialEq)]
@@ -60,6 +82,8 @@ pub struct ResolvedStream {
     pub duration: Option<f64>,
     /// Thumbnail URL, when known.
     pub thumbnail: Option<String>,
+    /// The container extension of the stream, when known.
+    pub extension: Option<String>,
 }
 
 /// A client for the YouTube Music catalogue.
@@ -87,7 +111,7 @@ impl YtMusicClient {
         let binary = find_executable("yt-dlp").ok_or(YtMusicError::MissingBinary)?;
         Ok(Self {
             binary,
-            timeout: Duration::from_secs(45),
+            timeout: Duration::from_secs(120),
         })
     }
 
@@ -95,7 +119,7 @@ impl YtMusicClient {
     pub fn with_binary(binary: impl Into<PathBuf>) -> Self {
         Self {
             binary: binary.into(),
-            timeout: Duration::from_secs(45),
+            timeout: Duration::from_secs(120),
         }
     }
 
@@ -118,40 +142,47 @@ impl YtMusicClient {
 
         let url = format!("https://music.youtube.com/search?q={}", urlencode(query));
 
+        let limit = limit.clamp(1, 100);
         let mut args: Vec<String> = vec![
-            "--flat-playlist".into(),
             "--dump-json".into(),
             "--no-warnings".into(),
             "--no-playlist".into(),
             "--playlist-end".into(),
-            limit.clamp(1, 200).to_string(),
+            limit.to_string(),
         ];
         args.push(url);
 
-        let stdout = self.run(&args).await?;
-        let tracks = parse_search_results(&stdout);
-
-        if tracks.is_empty() {
-            // Fall back to the generic YouTube search in case the music
-            // search page layout changed.
-            let fallback_args: Vec<String> = vec![
-                format!("ytsearch{limit}:{query}"),
-                "--flat-playlist".into(),
-                "--dump-json".into(),
-                "--no-warnings".into(),
-            ];
-            let stdout = self.run(&fallback_args).await?;
-            let tracks = parse_search_results(&stdout);
-            if tracks.is_empty() {
-                return Err(YtMusicError::Empty);
+        match self.run(&args).await {
+            Ok(stdout) => {
+                let tracks = parse_search_results(&stdout);
+                if !tracks.is_empty() {
+                    return Ok(tracks.into_iter().take(limit).collect());
+                }
             }
-            return Ok(tracks);
+            Err(err) => {
+                tracing::debug!("the YouTube Music search failed: {err}");
+            }
         }
 
-        Ok(tracks)
+        // Fall back to the generic YouTube search, which is much faster but
+        // does not carry the YouTube Music metadata.
+        let fallback_args: Vec<String> = vec![
+            format!("ytsearch{limit}:{query}"),
+            "--dump-json".into(),
+            "--no-warnings".into(),
+        ];
+        let stdout = self.run(&fallback_args).await?;
+        let tracks = parse_search_results(&stdout);
+        if tracks.is_empty() {
+            return Err(YtMusicError::Empty);
+        }
+        Ok(tracks.into_iter().take(limit).collect())
     }
 
     /// Resolves a YouTube Music video id into a directly playable stream.
+    ///
+    /// Several player clients are tried in turn, because YouTube blocks some
+    /// of them depending on where the request comes from.
     pub async fn resolve(&self, id: &str) -> Result<ResolvedStream, YtMusicError> {
         let id = id.trim();
         if id.is_empty() {
@@ -159,16 +190,30 @@ impl YtMusicClient {
         }
 
         let url = format!("https://music.youtube.com/watch?v={id}");
-        let args = vec![
-            "--dump-json".into(),
-            "--no-warnings".into(),
-            "-f".into(),
-            "bestaudio/best".into(),
-            url,
-        ];
+        let mut last_error = YtMusicError::Empty;
 
-        let stdout = self.run(&args).await?;
-        parse_resolved(&stdout)
+        for client in PLAYER_CLIENTS {
+            let args = vec![
+                "--dump-json".to_string(),
+                "--no-warnings".to_string(),
+                "--no-playlist".to_string(),
+                "-f".to_string(),
+                FORMAT_SELECTOR.to_string(),
+                "--extractor-args".to_string(),
+                format!("youtube:player_client={client}"),
+                url.clone(),
+            ];
+
+            match self.run(&args).await {
+                Ok(stdout) => match parse_resolved(&stdout) {
+                    Ok(resolved) => return Ok(resolved),
+                    Err(err) => last_error = err,
+                },
+                Err(err) => last_error = err,
+            }
+        }
+
+        Err(last_error)
     }
 
     /// Runs `yt-dlp` with the given arguments and returns its standard output.
@@ -187,9 +232,13 @@ impl YtMusicClient {
             .map_err(|err| YtMusicError::Spawn(err.to_string()))?;
 
         if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if stderr.contains("Sign in to confirm") || stderr.contains("not a bot") {
+                return Err(YtMusicError::BotCheck);
+            }
             return Err(YtMusicError::CommandFailed {
                 code: output.status.code(),
-                stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+                stderr,
             });
         }
 
@@ -216,6 +265,8 @@ struct DumpEntry {
     artist: Option<String>,
     #[serde(default)]
     thumbnails: Option<Vec<Thumbnail>>,
+    #[serde(default)]
+    ext: Option<String>,
 }
 
 /// A thumbnail entry as reported by `yt-dlp`.
@@ -313,6 +364,7 @@ fn parse_resolved(stdout: &str) -> Result<ResolvedStream, YtMusicError> {
             artist,
             duration: entry.duration,
             thumbnail: best_thumbnail(entry.thumbnails.as_ref()),
+            extension: entry.ext.clone(),
         });
     }
 

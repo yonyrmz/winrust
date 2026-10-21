@@ -223,6 +223,26 @@ fn draw_glyph(image: &mut Image, x: u32, y: u32, glyph: usize, color: [u8; 4]) {
     }
 }
 
+/// Draws a triangle pointing to the right.
+fn triangle_right(image: &mut Image, x: u32, y: u32, width: u32, height: u32, color: [u8; 4]) {
+    for row in 0..height {
+        let distance = (row as f32 - height as f32 / 2.0).abs();
+        let ratio = 1.0 - (2.0 * distance / height as f32).clamp(0.0, 1.0);
+        let span = (width as f32 * ratio).round() as u32;
+        fill(image, Rect::new(x, y + row, span, 1), color);
+    }
+}
+
+/// Draws a triangle pointing to the left.
+fn triangle_left(image: &mut Image, x: u32, y: u32, width: u32, height: u32, color: [u8; 4]) {
+    for row in 0..height {
+        let distance = (row as f32 - height as f32 / 2.0).abs();
+        let ratio = 1.0 - (2.0 * distance / height as f32).clamp(0.0, 1.0);
+        let span = (width as f32 * ratio).round() as u32;
+        fill(image, Rect::new(x + width - span, y + row, span, 1), color);
+    }
+}
+
 /// Builds the `numbers.bmp` bitmap.
 fn build_numbers() -> Image {
     let mut image = Image::new(99, 13);
@@ -338,24 +358,18 @@ fn build_cbuttons() -> Image {
         }
 
         // Play triangle.
-        for row in 0..6u32 {
-            fill(
-                &mut image,
-                Rect::new(29 + row / 2, y + 6 + row, 1, 1),
-                glyph,
-            );
-        }
+        triangle_right(&mut image, 28, y + 6, 9, 7, glyph);
         // Pause bars.
         fill(&mut image, Rect::new(52, y + 6, 3, 7), glyph);
         fill(&mut image, Rect::new(57, y + 6, 3, 7), glyph);
         // Stop square.
-        fill(&mut image, Rect::new(76, y + 6, 8, 7), glyph);
-        // Previous.
-        fill(&mut image, Rect::new(9, y + 6, 3, 7), glyph);
-        fill(&mut image, Rect::new(12, y + 6, 1, 7), glyph);
-        // Next.
-        fill(&mut image, Rect::new(98, y + 6, 3, 7), glyph);
-        fill(&mut image, Rect::new(101, y + 6, 1, 7), glyph);
+        fill(&mut image, Rect::new(77, y + 6, 7, 7), glyph);
+        // Previous: a bar and a left pointing triangle.
+        fill(&mut image, Rect::new(6, y + 6, 2, 7), glyph);
+        triangle_left(&mut image, 9, y + 6, 8, 7, glyph);
+        // Next: a right pointing triangle and a bar.
+        triangle_right(&mut image, 99, y + 6, 8, 7, glyph);
+        fill(&mut image, Rect::new(108, y + 6, 2, 7), glyph);
     }
 
     // Eject button (22x16, drawn at x=114).

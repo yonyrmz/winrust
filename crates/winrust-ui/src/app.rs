@@ -17,13 +17,14 @@ use crate::theme::Theme;
 
 /// A message sent from a background task to the UI thread.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 enum AppMessage {
     /// The search finished successfully.
     SearchResults(Vec<Track>),
     /// The search failed.
     SearchError(String),
     /// A track was resolved into a playable URL.
-    Resolved(Track, String),
+    Resolved(Track, String, Option<String>),
     /// Resolving a track failed.
     ResolveError(String),
 }
@@ -95,6 +96,8 @@ pub struct WinrustApp {
     eq_enabled: bool,
     /// The track that is currently being resolved.
     pending_track: Option<Track>,
+    /// The elapsed time, used by the scrolling ticker.
+    time: f64,
 }
 
 impl WinrustApp {
@@ -160,6 +163,7 @@ impl WinrustApp {
             eq_preamp: 0.0,
             eq_enabled: true,
             pending_track: None,
+            time: 0.0,
         };
 
         app.restore();
@@ -228,7 +232,7 @@ impl WinrustApp {
 
         let tx = self.message_tx.clone();
         runtime.spawn(async move {
-            match client.search(&query, 40).await {
+            match client.search(&query, 25).await {
                 Ok(results) => {
                     let _ = tx.send(AppMessage::SearchResults(results));
                 }
@@ -257,7 +261,11 @@ impl WinrustApp {
         runtime.spawn(async move {
             match client.resolve(&track.id).await {
                 Ok(resolved) => {
-                    let _ = tx.send(AppMessage::Resolved(track, resolved.url));
+                    let _ = tx.send(AppMessage::Resolved(
+                        track,
+                        resolved.url,
+                        resolved.extension,
+                    ));
                 }
                 Err(err) => {
                     let _ = tx.send(AppMessage::ResolveError(err.to_string()));
@@ -360,7 +368,7 @@ impl WinrustApp {
                     self.searching = false;
                     self.error = Some(err);
                 }
-                AppMessage::Resolved(track, url) => {
+                AppMessage::Resolved(track, url, extension) => {
                     self.pending_track = None;
                     self.current_title = track.title.clone();
                     self.current_artist = track.artist.clone();
@@ -371,7 +379,8 @@ impl WinrustApp {
                             id: track.id.clone(),
                             url: url.clone(),
                         };
-                        engine.play(track, MediaSource::http(url));
+                        let source = MediaSource::http_with_extension(url, extension);
+                        engine.play(track, source);
                     } else {
                         self.error = Some("no audio output device is available".to_string());
                     }
@@ -427,6 +436,7 @@ impl WinrustApp {
             visualizer: self.visualizer.bars.clone(),
             equalizer_open: self.equalizer_open,
             playlist_open: self.playlist_open,
+            time: self.time,
         }
     }
 
@@ -803,6 +813,7 @@ impl eframe::App for WinrustApp {
         }
 
         self.textures.upload(ui.ctx(), &self.skin);
+        self.time = ui.ctx().input(|input| input.time);
 
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)

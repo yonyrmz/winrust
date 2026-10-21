@@ -40,6 +40,8 @@ pub struct MainWindowState {
     pub equalizer_open: bool,
     /// Whether the playlist window is open.
     pub playlist_open: bool,
+    /// The elapsed time, used by the scrolling ticker.
+    pub time: f64,
 }
 
 /// The interactions the user performed on the main window.
@@ -194,6 +196,8 @@ impl<'a> MainWindow<'a> {
     }
 
     /// Draws the scrolling song title.
+    ///
+    /// Long titles scroll, exactly like the original marquee.
     fn draw_ticker(&self, painter: &egui::Painter, origin: Pos2, state: &MainWindowState) {
         let text = if state.title.is_empty() {
             "winrust".to_string()
@@ -204,11 +208,23 @@ impl<'a> MainWindow<'a> {
         };
 
         let rect = self.rect(origin, sprites::TICKER_RECT);
-        painter.text(
-            rect.left_center(),
+        let font = FontId::monospace(6.0 * self.scale.max(1.0));
+        let galley = painter.layout_no_wrap(text.clone(), font.clone(), self.theme.accent);
+        let text_width = galley.size().x;
+
+        let offset = if text_width > rect.width() {
+            let period = 3.0 + text_width / 60.0;
+            let phase = ((state.time as f32) % period) / period;
+            phase * (text_width - rect.width())
+        } else {
+            0.0
+        };
+
+        painter.with_clip_rect(rect).text(
+            Pos2::new(rect.min.x - offset, rect.center().y),
             Align2::LEFT_CENTER,
             text,
-            FontId::monospace(6.0 * self.scale.max(1.0)),
+            font,
             self.theme.accent,
         );
     }
