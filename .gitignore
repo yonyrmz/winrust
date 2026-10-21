@@ -1,0 +1,24 @@
+# Configuration files
+*.toml.bak
+.env
+
+# Build artifacts
+/target
+**/*.rs.bk
+
+# Editors
+.idea/
+.vscode/
+*.swp
+
+# Operating systems
+.DS_Store
+Thumbs.db
+
+# Local media and skins, they are not part of the source
+*.wsz
+*.mp3
+*.flac
+*.ogg
+*.opus
+*.wav

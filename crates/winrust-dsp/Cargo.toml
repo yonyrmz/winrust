@@ -1,0 +1,15 @@
+[package]
+name = "winrust-dsp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "DSP primitives for winrust: 10 band equalizer, FFT visualizer, resampler"
+
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }
+rustfft = "6"
+biquad = "0.6"

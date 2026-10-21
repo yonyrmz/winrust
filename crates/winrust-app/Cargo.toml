@@ -1,0 +1,22 @@
+[package]
+name = "winrust-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "The winrust music player"
+
+[dependencies]
+winrust-core = { workspace = true }
+winrust-audio = { workspace = true }
+winrust-dsp = { workspace = true }
+winrust-ytmusic = { workspace = true }
+winrust-skin = { workspace = true }
+winrust-ui = { workspace = true }
+
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

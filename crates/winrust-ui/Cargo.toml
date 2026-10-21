@@ -1,0 +1,25 @@
+[package]
+name = "winrust-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "The Winamp inspired user interface for winrust"
+
+[dependencies]
+winrust-core = { workspace = true }
+winrust-audio = { workspace = true }
+winrust-dsp = { workspace = true }
+winrust-skin = { workspace = true }
+winrust-ytmusic = { workspace = true }
+
+egui = "0.37"
+eframe = "0.37"
+rfd = "0.17"
+directories = "6"
+tokio = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

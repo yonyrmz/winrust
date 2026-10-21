@@ -1,0 +1,17 @@
+[package]
+name = "winrust-skin"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Winamp .wsz skin loader and sprite renderer for winrust"
+
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+
+image = { version = "0.25", default-features = false, features = ["bmp"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }

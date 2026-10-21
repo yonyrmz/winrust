@@ -1,0 +1,10 @@
+* text=auto eol=lf
+
+*.png binary
+*.bmp binary
+*.wsz binary
+*.mp3 binary
+*.flac binary
+*.ogg binary
+
+Cargo.lock text eol=lf

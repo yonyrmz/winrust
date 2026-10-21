@@ -1,0 +1,41 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/winrust-core",
+    "crates/winrust-audio",
+    "crates/winrust-dsp",
+    "crates/winrust-ytmusic",
+    "crates/winrust-skin",
+    "crates/winrust-ui",
+    "crates/winrust-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.87"
+license = "MIT"
+repository = "https://github.com/yonyrmz/winrust"
+authors = ["winrust contributors"]
+
+[workspace.dependencies]
+winrust-core = { path = "crates/winrust-core", version = "0.1.0" }
+winrust-audio = { path = "crates/winrust-audio", version = "0.1.0" }
+winrust-dsp = { path = "crates/winrust-dsp", version = "0.1.0" }
+winrust-ytmusic = { path = "crates/winrust-ytmusic", version = "0.1.0" }
+winrust-skin = { path = "crates/winrust-skin", version = "0.1.0" }
+winrust-ui = { path = "crates/winrust-ui", version = "0.1.0" }
+
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

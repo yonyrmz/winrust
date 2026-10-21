@@ -1,0 +1,22 @@
+[package]
+name = "winrust-audio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Audio engine for winrust: cpal output, symphonia decoding, ring buffer playback"
+
+[dependencies]
+winrust-core = { workspace = true }
+winrust-dsp = { workspace = true }
+
+cpal = "0.18"
+symphonia = { version = "0.5", features = ["all"] }
+rubato = "5.0"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+bytes = "1"
+thiserror = { workspace = true }
+tracing = { workspace = true }
+parking_lot = "0.12"

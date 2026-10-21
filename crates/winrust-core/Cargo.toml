@@ -1,0 +1,19 @@
+[package]
+name = "winrust-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Core state machine, queue and command bus for winrust"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+parking_lot = "0.12"
+
+[dev-dependencies]
+tempfile = "3"
