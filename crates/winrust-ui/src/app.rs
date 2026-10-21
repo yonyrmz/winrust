@@ -1,23 +1,47 @@
-//! The main application: the Winamp style window plus the browser panels.
+//! The winrust application.
 
+use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 
-use egui::{Color32, RichText};
+use egui::{Align, Layout, RichText, Vec2};
 use winrust_audio::{AudioEngine, MediaSource};
 use winrust_core::{PlaybackState, PlayerEvent, RepeatMode, Track, TrackSource};
 use winrust_dsp::Visualizer;
-use winrust_skin::sprites::{ToggleButton, TransportButton};
-use winrust_skin::Skin;
+use winrust_library::Library;
 use winrust_ytmusic::YtMusicClient;
 
-use crate::main_window::{MainWindow, MainWindowState};
-use crate::renderer::TextureCache;
+use crate::equalizer::EqualizerState;
+use crate::mini_player::{self, ActionSink, MiniPlayerState};
+use crate::player::{PlayerActions, PlayerBar};
+use crate::state::PersistedState;
 use crate::theme::Theme;
 
-/// A message sent from a background task to the UI thread.
+/// The tab that is being shown in the main window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum View {
+    /// The results of a YouTube Music search.
+    #[default]
+    Online,
+    /// The local library.
+    Library,
+    /// The play queue.
+    Queue,
+}
+
+impl View {
+    /// The label of the tab.
+    pub fn label(&self) -> &'static str {
+        match self {
+            View::Online => "Online",
+            View::Library => "Library",
+            View::Queue => "Queue",
+        }
+    }
+}
+
+/// A message sent from a background task to the interface.
 #[derive(Debug)]
-#[allow(clippy::large_enum_variant)]
 enum AppMessage {
     /// The search finished successfully.
     SearchResults(Vec<Track>),
@@ -27,12 +51,14 @@ enum AppMessage {
     Resolved(Track, String, Option<String>),
     /// Resolving a track failed.
     ResolveError(String),
+    /// The cover art of a track was downloaded.
+    Thumbnail(String, Vec<u8>),
 }
 
 /// The winrust application.
 pub struct WinrustApp {
     /// The audio engine, when an output device was available.
-    pub engine: Option<AudioEngine>,
+    engine: Option<AudioEngine>,
     /// The player events produced by the audio engine.
     events: Receiver<PlayerEvent>,
     /// The YouTube Music client, when `yt-dlp` is installed.
@@ -44,15 +70,10 @@ pub struct WinrustApp {
     /// The sender used by the background tasks.
     message_tx: Sender<AppMessage>,
 
-    /// The loaded skin.
-    skin: Skin,
-    /// The uploaded textures of the skin.
-    textures: TextureCache,
-    /// The colour theme.
-    theme: Theme,
-    /// The path of the loaded skin file.
-    skin_path: Option<String>,
-
+    /// The local library.
+    library: Library,
+    /// The tab that is being shown.
+    view: View,
     /// The current search query.
     query: String,
     /// The results of the last search.
@@ -61,15 +82,19 @@ pub struct WinrustApp {
     searching: bool,
     /// The last error message.
     error: Option<String>,
+    /// The filter of the library list.
+    filter: String,
 
     /// The play queue.
     queue: Vec<Track>,
     /// The index of the track that is playing.
     current_index: Option<usize>,
     /// The title of the current track.
-    current_title: String,
+    title: String,
     /// The artist of the current track.
-    current_artist: String,
+    artist: String,
+    /// The album of the current track.
+    album: String,
 
     /// The master volume.
     volume: f32,
@@ -79,25 +104,24 @@ pub struct WinrustApp {
     shuffle: bool,
     /// The repeat mode.
     repeat: RepeatMode,
-    /// Whether the equalizer window is open.
-    equalizer_open: bool,
-    /// Whether the playlist window is open.
-    playlist_open: bool,
-    /// The zoom factor of the skin.
-    scale: f32,
 
+    /// The equalizer.
+    equalizer: EqualizerState,
     /// The spectrum analyzer.
     visualizer: Visualizer,
-    /// The equalizer band gains in dB.
-    eq_bands: [f32; winrust_dsp::BAND_COUNT],
-    /// The equalizer preamp in dB.
-    eq_preamp: f32,
-    /// Whether the equalizer is enabled.
-    eq_enabled: bool,
-    /// The track that is currently being resolved.
-    pending_track: Option<Track>,
-    /// The elapsed time, used by the scrolling ticker.
-    time: f64,
+    /// Whether the equalizer window is open.
+    show_equalizer: bool,
+    /// Whether the mini player is open.
+    show_mini_player: bool,
+    /// The channel that carries the actions of the mini player.
+    mini_sink: ActionSink,
+
+    /// The cover art of the current track.
+    cover: Option<egui::TextureHandle>,
+    /// The cached cover art.
+    covers: HashMap<String, egui::TextureHandle>,
+    /// The egui context, kept so that the mini player can be closed.
+    ctx: Option<egui::Context>,
 }
 
 impl WinrustApp {
@@ -128,10 +152,6 @@ impl WinrustApp {
             }
         };
 
-        let skin = winrust_skin::default_skin();
-        let theme = Theme::from_skin(&skin);
-
-        // Restore the previous session, if there is one.
         let mut app = Self {
             engine,
             events,
@@ -139,35 +159,43 @@ impl WinrustApp {
             runtime,
             messages,
             message_tx,
-            skin,
-            textures: TextureCache::new(),
-            theme,
-            skin_path: None,
+            library: Library::new(),
+            view: View::default(),
             query: String::new(),
             results: Vec::new(),
             searching: false,
             error: None,
+            filter: String::new(),
             queue: Vec::new(),
             current_index: None,
-            current_title: String::new(),
-            current_artist: String::new(),
+            title: String::new(),
+            artist: String::new(),
+            album: String::new(),
             volume: 1.0,
             balance: 0.0,
             shuffle: false,
             repeat: RepeatMode::Off,
-            equalizer_open: false,
-            playlist_open: false,
-            scale: 2.0,
-            visualizer: Visualizer::new(19, 44_100.0),
-            eq_bands: [0.0; winrust_dsp::BAND_COUNT],
-            eq_preamp: 0.0,
-            eq_enabled: true,
-            pending_track: None,
-            time: 0.0,
+            equalizer: EqualizerState {
+                bands: [0.0; winrust_dsp::BAND_COUNT],
+                preamp: 0.0,
+                enabled: true,
+            },
+            visualizer: Visualizer::new(32, 44_100.0),
+            show_equalizer: false,
+            show_mini_player: false,
+            mini_sink: mini_player::action_sink(),
+            cover: None,
+            covers: HashMap::new(),
+            ctx: None,
         };
 
         app.restore();
         Ok(app)
+    }
+
+    /// Whether the YouTube Music backend is available.
+    pub fn has_youtube_music(&self) -> bool {
+        self.ytmusic.is_some()
     }
 
     /// Restores the previous session from disk.
@@ -176,45 +204,49 @@ impl WinrustApp {
             return;
         };
 
-        self.queue = state.queue;
         self.volume = state.volume.clamp(0.0, 1.0);
         self.balance = state.balance.clamp(-1.0, 1.0);
         if state.equalizer.len() == winrust_dsp::BAND_COUNT {
-            self.eq_bands.copy_from_slice(&state.equalizer);
+            self.equalizer.bands.copy_from_slice(&state.equalizer);
         }
-        self.eq_preamp = state.equalizer_preamp;
+        self.equalizer.preamp = state.equalizer_preamp;
 
-        if let Some(path) = state.skin.as_ref() {
-            match winrust_skin::load_wsz(std::path::Path::new(path)) {
-                Ok(skin) => {
-                    self.skin = skin;
-                    self.theme = Theme::from_skin(&self.skin);
-                    self.skin_path = Some(path.clone());
-                }
-                Err(err) => {
-                    tracing::warn!("could not restore the skin {path}: {err}");
-                }
+        for root in &state.library_roots {
+            if self.library.add_root(root).is_ok() {
+                continue;
             }
         }
 
         if let Some(engine) = self.engine.as_ref() {
             engine.set_volume(self.volume);
             engine.set_balance(self.balance);
-            engine.set_equalizer_bands(self.eq_bands);
-            engine.set_equalizer_preamp(self.eq_preamp);
+            engine.set_equalizer_bands(self.equalizer.bands);
+            engine.set_equalizer_preamp(self.equalizer.preamp);
         }
     }
 
-    /// Whether the YouTube Music backend is available.
-    pub fn has_youtube_music(&self) -> bool {
-        self.ytmusic.is_some()
+    /// Writes the current settings to disk.
+    pub fn save(&mut self) {
+        let state = PersistedState {
+            volume: self.volume,
+            balance: self.balance,
+            equalizer: self.equalizer.bands.to_vec(),
+            equalizer_preamp: self.equalizer.preamp,
+            library_roots: self.library.roots.clone(),
+        };
+
+        if let Err(err) = crate::state::save(&state) {
+            self.error = Some(format!("could not save the settings: {err}"));
+        }
     }
+
+    // ---------------------------------------------------------------- search
 
     /// Starts a search for the current query.
     fn start_search(&mut self) {
         let Some(client) = self.ytmusic.clone() else {
             self.error =
-                Some("yt-dlp was not found. Install it to stream from YouTube Music.".to_string());
+                Some("yt-dlp was not found. Install it to stream from YouTube Music.".into());
             return;
         };
         let Some(runtime) = self.runtime.as_ref() else {
@@ -229,6 +261,7 @@ impl WinrustApp {
 
         self.searching = true;
         self.error = None;
+        self.view = View::Online;
 
         let tx = self.message_tx.clone();
         runtime.spawn(async move {
@@ -244,7 +277,7 @@ impl WinrustApp {
     }
 
     /// Resolves a track into a playable URL and starts playing it.
-    fn play_track(&mut self, track: Track) {
+    fn resolve_and_play(&mut self, track: Track) {
         let Some(client) = self.ytmusic.clone() else {
             self.error = Some("yt-dlp was not found in PATH".to_string());
             return;
@@ -254,7 +287,6 @@ impl WinrustApp {
             return;
         };
 
-        self.pending_track = Some(track.clone());
         self.error = None;
 
         let tx = self.message_tx.clone();
@@ -274,24 +306,72 @@ impl WinrustApp {
         });
     }
 
-    /// Adds a track to the queue and starts playing it.
-    fn enqueue_and_play(&mut self, track: Track) {
-        if let Some(index) = self.queue.iter().position(|item| item.id == track.id) {
-            self.current_index = Some(index);
-        } else {
-            self.queue.push(track.clone());
-            self.current_index = Some(self.queue.len() - 1);
-        }
-        self.play_track(track);
-    }
-
-    /// Plays a track of the queue by index.
-    fn play_queue_index(&mut self, index: usize) {
-        if index >= self.queue.len() {
+    /// Downloads the cover art of a track in the background.
+    fn fetch_cover(&mut self, url: &str) {
+        if self.covers.contains_key(url) {
+            self.cover = self.covers.get(url).cloned();
             return;
         }
+
+        let Some(runtime) = self.runtime.as_ref() else {
+            return;
+        };
+
+        let url = url.to_string();
+        let key = url.clone();
+        let tx = self.message_tx.clone();
+        runtime.spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                ureq::get(&url).call().ok()?.body_mut().read_to_vec().ok()
+            })
+            .await;
+
+            if let Ok(Some(bytes)) = result {
+                let _ = tx.send(AppMessage::Thumbnail(key, bytes));
+            }
+        });
+    }
+
+    // -------------------------------------------------------------- playback
+
+    /// Plays a track, adding it to the queue when needed.
+    fn play_track(&mut self, track: Track) {
+        match &track.source {
+            TrackSource::Local { path } => {
+                let path = path.clone();
+                self.enqueue(&track);
+                self.current_index = self.queue.iter().position(|item| item.id == track.id);
+                self.title = track.title.clone();
+                self.artist = track.artist.clone();
+                self.album = track.album.clone().unwrap_or_default();
+
+                if let Some(engine) = self.engine.as_ref() {
+                    engine.play(track, MediaSource::file(path));
+                } else {
+                    self.error = Some("no audio output device is available".to_string());
+                }
+            }
+            TrackSource::YouTubeMusic { .. } => {
+                self.enqueue(&track);
+                self.current_index = self.queue.iter().position(|item| item.id == track.id);
+                self.resolve_and_play(track);
+            }
+        }
+    }
+
+    /// Adds a track to the queue, if it is not there already.
+    fn enqueue(&mut self, track: &Track) {
+        if !self.queue.iter().any(|item| item.id == track.id) {
+            self.queue.push(track.clone());
+        }
+    }
+
+    /// Plays the track of the queue at the given index.
+    fn play_queue_index(&mut self, index: usize) {
+        let Some(track) = self.queue.get(index).cloned() else {
+            return;
+        };
         self.current_index = Some(index);
-        let track = self.queue[index].clone();
         self.play_track(track);
     }
 
@@ -302,7 +382,6 @@ impl WinrustApp {
         }
 
         let next = if self.shuffle && self.queue.len() > 1 {
-            // Pick another track at random, never the current one.
             let mut index = self.current_index.unwrap_or(0);
             while index == self.current_index.unwrap_or(usize::MAX) {
                 index = rand_index(self.queue.len());
@@ -311,16 +390,14 @@ impl WinrustApp {
         } else {
             match self.repeat {
                 RepeatMode::One => self.current_index,
-                _ => {
-                    if self.current_index.map(|index| index + 1) == Some(self.queue.len()) {
-                        match self.repeat {
-                            RepeatMode::All => Some(0),
-                            _ => None,
-                        }
-                    } else {
-                        self.current_index.map(|index| index + 1)
-                    }
-                }
+                _ => match self.current_index.map(|index| index + 1) {
+                    Some(index) if index < self.queue.len() => Some(index),
+                    Some(_) => match self.repeat {
+                        RepeatMode::All => Some(0),
+                        _ => None,
+                    },
+                    None => Some(0),
+                },
             }
         };
 
@@ -331,6 +408,8 @@ impl WinrustApp {
                     engine.stop();
                 }
                 self.current_index = None;
+                self.title.clear();
+                self.artist.clear();
             }
         }
     }
@@ -361,16 +440,20 @@ impl WinrustApp {
                 } else if !self.queue.is_empty() {
                     self.play_queue_index(0);
                 } else if !self.results.is_empty() {
-                    // Nothing is queued yet: start with the first result.
                     let track = self.results[0].clone();
-                    self.enqueue_and_play(track);
+                    self.play_track(track);
+                } else if !self.library.is_empty() {
+                    let track = self.library.tracks[0].to_track();
+                    self.play_track(track);
                 }
             }
         }
     }
 
+    // --------------------------------------------------------------- helpers
+
     /// Handles the messages coming from the background tasks.
-    fn drain_messages(&mut self) {
+    fn drain_messages(&mut self, ctx: &egui::Context) {
         while let Ok(message) = self.messages.try_recv() {
             match message {
                 AppMessage::SearchResults(results) => {
@@ -382,9 +465,12 @@ impl WinrustApp {
                     self.error = Some(err);
                 }
                 AppMessage::Resolved(track, url, extension) => {
-                    self.pending_track = None;
-                    self.current_title = track.title.clone();
-                    self.current_artist = track.artist.clone();
+                    self.title = track.title.clone();
+                    self.artist = track.artist.clone();
+
+                    if let Some(thumbnail) = track.thumbnail.clone() {
+                        self.fetch_cover(&thumbnail);
+                    }
 
                     if let Some(engine) = self.engine.as_ref() {
                         let mut track = track;
@@ -399,8 +485,13 @@ impl WinrustApp {
                     }
                 }
                 AppMessage::ResolveError(err) => {
-                    self.pending_track = None;
                     self.error = Some(err);
+                }
+                AppMessage::Thumbnail(url, bytes) => {
+                    if let Some(texture) = decode_cover(ctx, &bytes) {
+                        self.cover = Some(texture.clone());
+                        self.covers.insert(url, texture);
+                    }
                 }
             }
         }
@@ -411,11 +502,9 @@ impl WinrustApp {
         while let Ok(event) = self.events.try_recv() {
             match event {
                 PlayerEvent::TrackEnded => self.play_next(),
-                PlayerEvent::StateChanged(state) => {
-                    if state == PlaybackState::Stopped {
-                        self.current_title.clear();
-                        self.current_artist.clear();
-                    }
+                PlayerEvent::StateChanged(PlaybackState::Stopped) => {
+                    self.title.clear();
+                    self.artist.clear();
                 }
                 PlayerEvent::Error(err) => self.error = Some(err),
                 _ => {}
@@ -423,322 +512,9 @@ impl WinrustApp {
         }
     }
 
-    /// The state shown by the main window.
-    fn main_window_state(&self) -> MainWindowState {
-        let (position, duration, playing, paused) = match self.engine.as_ref() {
-            Some(engine) => (
-                engine.position(),
-                engine.duration(),
-                engine.state() == PlaybackState::Playing,
-                engine.state() == PlaybackState::Paused,
-            ),
-            None => (0.0, 0.0, false, false),
-        };
-
-        MainWindowState {
-            playing,
-            paused,
-            position,
-            duration,
-            volume: self.volume,
-            balance: self.balance,
-            shuffle: self.shuffle,
-            repeat: self.repeat != RepeatMode::Off,
-            title: self.current_title.clone(),
-            artist: self.current_artist.clone(),
-            visualizer: self.visualizer.bars.clone(),
-            equalizer_open: self.equalizer_open,
-            playlist_open: self.playlist_open,
-            time: self.time,
-        }
-    }
-
-    /// Handles the interactions of the main window.
-    fn handle_main_window(&mut self, actions: crate::main_window::MainWindowActions) {
-        if let Some(button) = actions.transport {
-            match button {
-                TransportButton::Play => {
-                    if let Some(engine) = self.engine.as_ref() {
-                        if engine.state() == PlaybackState::Stopped {
-                            self.toggle_playback();
-                        }
-                    }
-                }
-                TransportButton::Pause => {
-                    if let Some(engine) = self.engine.as_ref() {
-                        if engine.state() == PlaybackState::Playing {
-                            engine.pause();
-                        }
-                    }
-                }
-                TransportButton::Stop => {
-                    if let Some(engine) = self.engine.as_ref() {
-                        engine.stop();
-                    }
-                }
-                TransportButton::Next => self.play_next(),
-                TransportButton::Previous => self.play_previous(),
-                TransportButton::Eject => {}
-            }
-        }
-
-        if let Some(toggle) = actions.toggle {
-            match toggle {
-                ToggleButton::Shuffle => self.shuffle = !self.shuffle,
-                ToggleButton::Repeat => {
-                    self.repeat = match self.repeat {
-                        RepeatMode::Off => RepeatMode::All,
-                        RepeatMode::All => RepeatMode::One,
-                        RepeatMode::One => RepeatMode::Off,
-                    }
-                }
-                ToggleButton::Equalizer => self.equalizer_open = !self.equalizer_open,
-                ToggleButton::Playlist => self.playlist_open = !self.playlist_open,
-            }
-        }
-
-        if let Some(position) = actions.seek {
-            if let Some(engine) = self.engine.as_ref() {
-                let duration = engine.duration();
-                if duration > 0.0 {
-                    engine.seek(position as f64 * duration);
-                }
-            }
-        }
-
-        if let Some(volume) = actions.volume {
-            self.volume = volume.clamp(0.0, 1.0);
-            if let Some(engine) = self.engine.as_ref() {
-                engine.set_volume(self.volume);
-            }
-        }
-
-        if let Some(balance) = actions.balance {
-            self.balance = balance;
-            if let Some(engine) = self.engine.as_ref() {
-                engine.set_balance(self.balance);
-            }
-        }
-    }
-
-    /// Draws the browser panel with the search field and the results.
-    fn show_browser(&mut self, ui: &mut egui::Ui) {
-        egui::Frame::group(ui.style())
-            .fill(self.theme.panel)
-            .inner_margin(8.0)
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    let response = ui.add(
-                        egui::TextEdit::singleline(&mut self.query)
-                            .hint_text("Search YouTube Music…")
-                            .desired_width(240.0),
-                    );
-                    let submit = response.lost_focus()
-                        && ui.input(|input| input.key_pressed(egui::Key::Enter));
-                    if ui.button("Search").clicked() || submit {
-                        self.start_search();
-                    }
-                    if self.searching {
-                        ui.spinner();
-                    }
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Load skin…").clicked() {
-                            self.open_skin_dialog();
-                        }
-                        if ui.button("Save").clicked() {
-                            self.save_state();
-                        }
-                    });
-                });
-
-                if let Some(error) = &self.error {
-                    ui.colored_label(Color32::from_rgb(0xff, 0x60, 0x60), error);
-                }
-
-                if self.results.is_empty() {
-                    ui.weak(if self.has_youtube_music() {
-                        "Search for a song to fill the playlist."
-                    } else {
-                        "yt-dlp is not installed: install it to search YouTube Music."
-                    });
-                    return;
-                }
-
-                let mut to_play: Option<usize> = None;
-                let mut to_add: Option<usize> = None;
-                egui::ScrollArea::vertical()
-                    .max_height(220.0)
-                    .show(ui, |ui| {
-                        for (index, track) in self.results.iter().enumerate() {
-                            ui.horizontal(|ui| {
-                                let title = ui.add(
-                                    egui::Label::new(RichText::new(&track.title).strong())
-                                        .truncate(),
-                                );
-                                let artist = ui.add(egui::Label::new(&track.artist).truncate());
-                                if title.double_clicked() || artist.double_clicked() {
-                                    to_play = Some(index);
-                                }
-                                if ui
-                                    .small_button("+")
-                                    .on_hover_text("Add to the playlist")
-                                    .clicked()
-                                {
-                                    to_add = Some(index);
-                                }
-                            });
-                        }
-                    });
-
-                if let Some(index) = to_add {
-                    let track = self.results[index].clone();
-                    if !self.queue.iter().any(|item| item.id == track.id) {
-                        self.queue.push(track);
-                    }
-                }
-
-                if let Some(index) = to_play {
-                    let track = self.results[index].clone();
-                    self.enqueue_and_play(track);
-                }
-            });
-    }
-
-    /// Draws the playlist window.
-    fn show_playlist_window(&mut self, ctx: &egui::Context) {
-        let mut open = self.playlist_open;
-        egui::Window::new("Playlist")
-            .open(&mut open)
-            .resizable(true)
-            .default_width(420.0)
-            .default_height(320.0)
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    if ui.button("Clear").clicked() {
-                        self.queue.clear();
-                        self.current_index = None;
-                        if let Some(engine) = self.engine.as_ref() {
-                            engine.stop();
-                        }
-                    }
-                    if ui.button("Remove current").clicked() {
-                        if let Some(index) = self.current_index {
-                            self.queue.remove(index);
-                            if self.queue.is_empty() {
-                                self.current_index = None;
-                            } else {
-                                self.current_index = Some(index.min(self.queue.len() - 1));
-                            }
-                        }
-                    }
-                });
-
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    let mut to_play = None;
-                    let mut to_remove = None;
-                    for (index, track) in self.queue.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            let is_current = self.current_index == Some(index);
-                            let text = if is_current {
-                                RichText::new(&track.title).color(self.theme.playlist_current)
-                            } else {
-                                RichText::new(&track.title).color(self.theme.playlist_text)
-                            };
-                            let label = ui.add(egui::Label::new(text).truncate());
-                            if label.double_clicked() {
-                                to_play = Some(index);
-                            }
-                            ui.add(egui::Label::new(&track.artist).truncate());
-                            if ui.small_button("x").clicked() {
-                                to_remove = Some(index);
-                            }
-                        });
-                    }
-
-                    if let Some(index) = to_play {
-                        self.play_queue_index(index);
-                    }
-                    if let Some(index) = to_remove {
-                        self.queue.remove(index);
-                        if self.current_index == Some(index) {
-                            self.current_index = None;
-                        } else if self.current_index.map(|current| current > index) == Some(true) {
-                            self.current_index = self.current_index.map(|current| current - 1);
-                        }
-                    }
-                });
-            });
-
-        self.playlist_open = open;
-    }
-
-    /// Draws the equalizer window.
-    fn show_equalizer_window(&mut self, ctx: &egui::Context) {
-        let mut open = self.equalizer_open;
-        egui::Window::new("Equalizer")
-            .open(&mut open)
-            .resizable(false)
-            .default_width(420.0)
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    let mut enabled = self.eq_enabled;
-                    if ui.checkbox(&mut enabled, "Enabled").changed() {
-                        self.eq_enabled = enabled;
-                        if let Some(engine) = self.engine.as_ref() {
-                            engine.set_equalizer_enabled(enabled);
-                        }
-                    }
-                    if ui.button("Reset").clicked() {
-                        self.eq_bands = [0.0; winrust_dsp::BAND_COUNT];
-                        self.eq_preamp = 0.0;
-                        self.push_equalizer();
-                    }
-                });
-
-                ui.add_space(4.0);
-
-                ui.horizontal(|ui| {
-                    ui.label("Preamp");
-                    let mut preamp = self.eq_preamp;
-                    if ui
-                        .add_sized(
-                            [160.0, 20.0],
-                            egui::Slider::new(&mut preamp, -12.0..=12.0).suffix(" dB"),
-                        )
-                        .changed()
-                    {
-                        self.eq_preamp = preamp;
-                        self.push_equalizer();
-                    }
-                });
-
-                ui.add_space(4.0);
-
-                ui.horizontal(|ui| {
-                    for band in 0..winrust_dsp::BAND_COUNT {
-                        ui.vertical(|ui| {
-                            let mut gain = self.eq_bands[band];
-                            let response = ui.add_sized(
-                                [22.0, 120.0],
-                                egui::Slider::new(&mut gain, -12.0..=12.0).vertical(),
-                            );
-                            if response.changed() {
-                                self.eq_bands[band] = gain;
-                                self.push_equalizer();
-                            }
-                            ui.small(format!("{}", winrust_dsp::WINAMP_BANDS[band]));
-                        });
-                    }
-                });
-            });
-
-        self.equalizer_open = open;
-    }
-
     /// Handles the global keyboard shortcuts.
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        let (space, next, previous, volume_up, volume_down, stop) = ctx.input(|input| {
+        let (space, next, previous, volume_up, volume_down, stop, save) = ctx.input(|input| {
             (
                 input.key_pressed(egui::Key::Space),
                 input.key_pressed(egui::Key::ArrowRight) && input.modifiers.ctrl,
@@ -746,6 +522,7 @@ impl WinrustApp {
                 input.key_pressed(egui::Key::ArrowUp) && input.modifiers.ctrl,
                 input.key_pressed(egui::Key::ArrowDown) && input.modifiers.ctrl,
                 input.key_pressed(egui::Key::S) && input.modifiers.ctrl,
+                input.key_pressed(egui::Key::S) && input.modifiers.shift,
             )
         });
 
@@ -763,6 +540,9 @@ impl WinrustApp {
                 engine.stop();
             }
         }
+        if save {
+            self.save();
+        }
         if volume_up || volume_down {
             let delta = if volume_up { 0.05 } else { -0.05 };
             self.volume = (self.volume + delta).clamp(0.0, 1.0);
@@ -772,61 +552,517 @@ impl WinrustApp {
         }
     }
 
-    /// Sends the equalizer settings to the engine.
-    fn push_equalizer(&mut self) {
-        if let Some(engine) = self.engine.as_ref() {
-            engine.set_equalizer_bands(self.eq_bands);
-            engine.set_equalizer_preamp(self.eq_preamp);
-            engine.set_equalizer_enabled(self.eq_enabled);
+    /// Handles the actions of the transport bar.
+    fn handle_player_actions(&mut self, actions: PlayerActions) {
+        if actions.toggle_play {
+            self.toggle_playback();
+        }
+        if actions.previous {
+            self.play_previous();
+        }
+        if actions.next {
+            self.play_next();
+        }
+        if let Some(position) = actions.seek {
+            if let Some(engine) = self.engine.as_ref() {
+                let duration = engine.duration();
+                if duration > 0.0 {
+                    engine.seek(position as f64 * duration);
+                }
+            }
+        }
+        if let Some(volume) = actions.volume {
+            self.volume = volume.clamp(0.0, 1.0);
+            if let Some(engine) = self.engine.as_ref() {
+                engine.set_volume(self.volume);
+            }
+        }
+        if actions.shuffle {
+            self.shuffle = !self.shuffle;
+        }
+        if actions.repeat {
+            self.repeat = match self.repeat {
+                RepeatMode::Off => RepeatMode::All,
+                RepeatMode::All => RepeatMode::One,
+                RepeatMode::One => RepeatMode::Off,
+            };
+        }
+        if actions.equalizer {
+            self.show_equalizer = !self.show_equalizer;
+        }
+        if actions.mini_player {
+            self.show_mini_player = !self.show_mini_player;
+            if !self.show_mini_player {
+                mini_player::close(self.ui_ctx());
+            }
         }
     }
 
-    /// Opens the native file dialog and loads the selected skin.
-    fn open_skin_dialog(&mut self) {
-        let Some(path) = rfd::FileDialog::new()
-            .add_filter("Winamp skin", &["wsz", "zip"])
-            .set_title("Load a skin")
-            .pick_file()
+    /// Handles the actions of the mini player.
+    fn handle_mini_actions(&mut self) {
+        let actions = {
+            let mut sink = self.mini_sink.lock().unwrap_or_else(|err| err.into_inner());
+            crate::mini_player::MiniPlayerActions {
+                toggle_play: std::mem::take(&mut sink.toggle_play),
+                previous: std::mem::take(&mut sink.previous),
+                next: std::mem::take(&mut sink.next),
+                seek: sink.seek.take(),
+                volume: sink.volume.take(),
+                close: std::mem::take(&mut sink.close),
+            }
+        };
+
+        if actions.toggle_play {
+            self.toggle_playback();
+        }
+        if actions.previous {
+            self.play_previous();
+        }
+        if actions.next {
+            self.play_next();
+        }
+        if let Some(position) = actions.seek {
+            if let Some(engine) = self.engine.as_ref() {
+                let duration = engine.duration();
+                if duration > 0.0 {
+                    engine.seek(position as f64 * duration);
+                }
+            }
+        }
+        if let Some(volume) = actions.volume {
+            self.volume = volume.clamp(0.0, 1.0);
+            if let Some(engine) = self.engine.as_ref() {
+                engine.set_volume(self.volume);
+            }
+        }
+        if actions.close {
+            self.show_mini_player = false;
+        }
+    }
+
+    /// The egui context, stored so that the mini player can be closed.
+    fn ui_ctx(&self) -> &egui::Context {
+        self.ctx.as_ref().expect("the context is always set")
+    }
+
+    // ------------------------------------------------------------------ ui
+
+    /// Draws the top bar with the search field and the tabs.
+    fn show_top_bar(&mut self, ui: &mut egui::Ui, theme: &Theme) {
+        ui.horizontal(|ui| {
+            let response = ui.add_sized(
+                Vec2::new(340.0, 30.0),
+                egui::TextEdit::singleline(&mut self.query)
+                    .hint_text("Search YouTube Music…")
+                    .desired_width(340.0),
+            );
+
+            let submit =
+                response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+            if ui.button("Search").clicked() || submit {
+                self.start_search();
+            }
+
+            if self.searching {
+                ui.spinner();
+            }
+
+            ui.add_space(16.0);
+
+            for view in [View::Online, View::Library, View::Queue] {
+                let selected = self.view == view;
+                let label = match view {
+                    View::Queue => {
+                        let count = self.queue.len();
+                        format!("{} ({count})", view.label())
+                    }
+                    _ => view.label().to_string(),
+                };
+
+                if ui
+                    .selectable_label(selected, label)
+                    .on_hover_text(match view {
+                        View::Online => "Search YouTube Music",
+                        View::Library => "Your local music",
+                        View::Queue => "The songs that will play next",
+                    })
+                    .clicked()
+                {
+                    self.view = view;
+                }
+            }
+
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.button("Add folder…").clicked() {
+                    self.add_library_folder();
+                }
+                if ui.button("Save").clicked() {
+                    self.save();
+                }
+            });
+        });
+
+        if let Some(error) = &self.error {
+            ui.colored_label(theme.warning, error);
+        }
+    }
+
+    /// Opens the folder dialog and adds the folder to the library.
+    fn add_library_folder(&mut self) {
+        let Some(folder) = rfd::FileDialog::new()
+            .set_title("Add a music folder")
+            .pick_folder()
         else {
             return;
         };
 
-        match winrust_skin::load_wsz(&path) {
-            Ok(skin) => {
-                self.skin = skin;
-                self.theme = Theme::from_skin(&self.skin);
-                self.textures.clear();
-                self.skin_path = Some(path.display().to_string());
+        match self.library.add_root(folder) {
+            Ok(()) => {
+                self.view = View::Library;
                 self.error = None;
             }
-            Err(err) => {
-                self.error = Some(format!("could not load the skin: {err}"));
-            }
+            Err(err) => self.error = Some(err.to_string()),
         }
     }
 
-    /// Writes the current state to disk.
-    fn save_state(&mut self) {
-        let state = crate::state::PersistedState {
-            queue: self.queue.clone(),
+    /// Draws the list of the current view.
+    fn show_list(&mut self, ui: &mut egui::Ui, theme: &Theme) {
+        match self.view {
+            View::Online => self.show_online_list(ui, theme),
+            View::Library => self.show_library(ui, theme),
+            View::Queue => self.show_queue(ui, theme),
+        }
+    }
+
+    /// Draws the results of the YouTube Music search.
+    fn show_online_list(&mut self, ui: &mut egui::Ui, theme: &Theme) {
+        if self.results.is_empty() {
+            ui.weak(if self.has_youtube_music() {
+                "Search for a song to fill the list."
+            } else {
+                "yt-dlp is not installed: install it to stream from YouTube Music."
+            });
+            return;
+        }
+
+        let mut to_play = None;
+        let mut to_add = None;
+
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for (index, track) in self.results.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    let selected = self.queue.get(self.current_index.unwrap_or(0)) == Some(track);
+
+                    let title = ui.add(
+                        egui::Label::new(RichText::new(&track.title).strong().color(if selected {
+                            theme.accent
+                        } else {
+                            theme.text
+                        }))
+                        .truncate(),
+                    );
+                    let artist = ui.add(
+                        egui::Label::new(RichText::new(&track.artist).color(theme.text_dim))
+                            .truncate(),
+                    );
+
+                    if title.double_clicked() || artist.double_clicked() {
+                        to_play = Some(index);
+                    }
+
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui
+                            .small_button("+")
+                            .on_hover_text("Add to the queue")
+                            .clicked()
+                        {
+                            to_add = Some(index);
+                        }
+                        ui.label(
+                            RichText::new(
+                                track
+                                    .duration
+                                    .map(crate::player::format_time)
+                                    .unwrap_or_default(),
+                            )
+                            .size(11.0)
+                            .color(theme.text_dim)
+                            .monospace(),
+                        );
+                    });
+                });
+                ui.separator();
+            }
+        });
+
+        if let Some(index) = to_add {
+            let track = self.results[index].clone();
+            self.enqueue(&track);
+        }
+        if let Some(index) = to_play {
+            let track = self.results[index].clone();
+            self.play_track(track);
+        }
+    }
+
+    /// Draws the local library.
+    fn show_library(&mut self, ui: &mut egui::Ui, theme: &Theme) {
+        if self.library.roots.is_empty() {
+            ui.weak("No folder yet. Use “Add folder…” to pick your music.");
+            return;
+        }
+
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Folder").color(theme.text_dim));
+            for root in self.library.roots.clone() {
+                ui.horizontal(|ui| {
+                    ui.label(root.display().to_string());
+                    if ui.small_button("✕").on_hover_text("Remove").clicked() {
+                        self.library.remove_root(&root);
+                    }
+                });
+            }
+            if ui.button("Rescan").clicked() {
+                self.library.rescan();
+            }
+        });
+
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Filter").color(theme.text_dim));
+            ui.add(
+                egui::TextEdit::singleline(&mut self.filter)
+                    .hint_text("Artist, album or title…")
+                    .desired_width(280.0),
+            );
+            ui.label(
+                RichText::new(format!("{} tracks", self.library.len()))
+                    .size(11.0)
+                    .color(theme.text_dim),
+            );
+        });
+
+        ui.separator();
+
+        let filter = self.filter.to_lowercase();
+        let mut to_play = None;
+        let mut to_add = None;
+
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for (index, track) in self.library.tracks.iter().enumerate() {
+                if !filter.is_empty() {
+                    let haystack = format!(
+                        "{} {} {}",
+                        track.artist.to_lowercase(),
+                        track.album.to_lowercase(),
+                        track.title.to_lowercase()
+                    );
+                    if !haystack.contains(&filter) {
+                        continue;
+                    }
+                }
+
+                ui.horizontal(|ui| {
+                    let is_current = self
+                        .current_index
+                        .map(|current| {
+                            self.queue
+                                .get(current)
+                                .map(|item| item.id == track.path.display().to_string())
+                                .unwrap_or(false)
+                        })
+                        .unwrap_or(false);
+
+                    let title = ui.add(
+                        egui::Label::new(
+                            RichText::new(&track.title).strong().color(if is_current {
+                                theme.accent
+                            } else {
+                                theme.text
+                            }),
+                        )
+                        .truncate(),
+                    );
+                    let artist = ui.add(
+                        egui::Label::new(RichText::new(&track.artist).color(theme.text_dim))
+                            .truncate(),
+                    );
+
+                    if title.double_clicked() || artist.double_clicked() {
+                        to_play = Some(index);
+                    }
+
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui
+                            .small_button("+")
+                            .on_hover_text("Add to the queue")
+                            .clicked()
+                        {
+                            to_add = Some(index);
+                        }
+                        ui.label(
+                            RichText::new(
+                                track
+                                    .duration
+                                    .map(crate::player::format_time)
+                                    .unwrap_or_default(),
+                            )
+                            .size(11.0)
+                            .color(theme.text_dim)
+                            .monospace(),
+                        );
+                        if !track.album.is_empty() {
+                            ui.label(RichText::new(&track.album).size(11.0).color(theme.text_dim));
+                        }
+                    });
+                });
+            }
+        });
+
+        if let Some(index) = to_add {
+            let track = self.library.tracks[index].to_track();
+            self.enqueue(&track);
+        }
+        if let Some(index) = to_play {
+            let track = self.library.tracks[index].to_track();
+            self.play_track(track);
+        }
+    }
+
+    /// Draws the play queue.
+    fn show_queue(&mut self, ui: &mut egui::Ui, theme: &Theme) {
+        if self.queue.is_empty() {
+            ui.weak("The queue is empty.");
+            return;
+        }
+
+        let mut to_play = None;
+        let mut to_remove = None;
+
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for (index, track) in self.queue.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    let is_current = self.current_index == Some(index);
+                    let title = ui.add(
+                        egui::Label::new(
+                            RichText::new(&track.title).strong().color(if is_current {
+                                theme.accent
+                            } else {
+                                theme.text
+                            }),
+                        )
+                        .truncate(),
+                    );
+                    if title.double_clicked() {
+                        to_play = Some(index);
+                    }
+                    ui.add(
+                        egui::Label::new(RichText::new(&track.artist).color(theme.text_dim))
+                            .truncate(),
+                    );
+
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.small_button("✕").on_hover_text("Remove").clicked() {
+                            to_remove = Some(index);
+                        }
+                    });
+                });
+            }
+        });
+
+        if let Some(index) = to_remove {
+            self.queue.remove(index);
+            if self.current_index == Some(index) {
+                self.current_index = None;
+            } else if self.current_index.map(|current| current > index) == Some(true) {
+                self.current_index = self.current_index.map(|current| current - 1);
+            }
+        }
+        if let Some(index) = to_play {
+            self.play_queue_index(index);
+        }
+    }
+
+    /// Draws the equalizer window.
+    fn show_equalizer_window(&mut self, ctx: &egui::Context) {
+        if !self.show_equalizer {
+            return;
+        }
+
+        let mut open = self.show_equalizer;
+        egui::Window::new("Equalizer")
+            .open(&mut open)
+            .resizable(false)
+            .default_width(430.0)
+            .show(ctx, |ui| {
+                let theme = Theme::from_visuals(ui.visuals());
+                let actions = crate::equalizer::show(ui, &mut self.equalizer, &theme);
+
+                if let Some(bands) = actions.bands {
+                    if let Some(engine) = self.engine.as_ref() {
+                        engine.set_equalizer_bands(bands);
+                    }
+                }
+                if let Some(preamp) = actions.preamp {
+                    if let Some(engine) = self.engine.as_ref() {
+                        engine.set_equalizer_preamp(preamp);
+                    }
+                }
+                if let Some(enabled) = actions.enabled {
+                    if let Some(engine) = self.engine.as_ref() {
+                        engine.set_equalizer_enabled(enabled);
+                    }
+                }
+                if actions.reset {
+                    if let Some(engine) = self.engine.as_ref() {
+                        engine.set_equalizer_bands(self.equalizer.bands);
+                        engine.set_equalizer_preamp(self.equalizer.preamp);
+                    }
+                }
+            });
+
+        self.show_equalizer = open;
+    }
+
+    /// Draws the mini player.
+    fn show_mini_player(&mut self, ctx: &egui::Context) {
+        if !self.show_mini_player {
+            return;
+        }
+
+        let state = MiniPlayerState {
+            title: self.title.clone(),
+            artist: self.artist.clone(),
+            state: self
+                .engine
+                .as_ref()
+                .map(|engine| engine.state())
+                .unwrap_or(PlaybackState::Stopped),
+            position: self
+                .engine
+                .as_ref()
+                .map(|engine| engine.position())
+                .unwrap_or(0.0),
+            duration: self
+                .engine
+                .as_ref()
+                .map(|engine| engine.duration())
+                .unwrap_or(0.0),
             volume: self.volume,
-            balance: self.balance,
-            equalizer: self.eq_bands.to_vec(),
-            equalizer_preamp: self.eq_preamp,
-            skin: self.skin_path.clone(),
         };
 
-        match crate::state::save(&state) {
-            Ok(()) => self.error = None,
-            Err(err) => self.error = Some(format!("could not save the state: {err}")),
-        }
+        mini_player::show(ctx, state, self.mini_sink.clone());
     }
 }
 
+/// Decodes the cover art into a texture.
+fn decode_cover(ctx: &egui::Context, bytes: &[u8]) -> Option<egui::TextureHandle> {
+    let image = image::load_from_memory(bytes).ok()?.into_rgba8();
+    let size = [image.width() as usize, image.height() as usize];
+    let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &image);
+    Some(ctx.load_texture("cover", color_image, egui::TextureOptions::LINEAR))
+}
+
 /// Picks a pseudo random index below `len`.
-///
-/// A small xorshift generator is used on purpose: it keeps the player free
-/// of a dependency on a random number generator for such a small need.
 fn rand_index(len: usize) -> usize {
     if len <= 1 {
         return 0;
@@ -844,52 +1080,91 @@ fn rand_index(len: usize) -> usize {
 /// eframe glue.
 impl eframe::App for WinrustApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.drain_messages();
+        self.ctx = Some(ui.ctx().clone());
+
+        self.drain_messages(ui.ctx());
         self.drain_events();
         self.handle_shortcuts(ui.ctx());
+        self.handle_mini_actions();
 
-        // Feed the visualizer with the samples coming out of the engine.
+        // Feed the visualizer with the samples of the output.
         if let Some(engine) = self.engine.as_ref() {
             let samples = engine.drain_tap();
-            if !samples.is_empty() {
-                self.visualizer.push_mono(&samples);
-            } else {
+            if samples.is_empty() {
                 self.visualizer.decay();
+            } else {
+                self.visualizer.push_mono(&samples);
             }
         }
 
-        self.textures.upload(ui.ctx(), &self.skin);
-        self.time = ui.ctx().input(|input| input.time);
+        let theme = Theme::from_visuals(ui.visuals());
 
-        egui::CentralPanel::default()
-            .frame(egui::Frame::NONE)
+        egui::Panel::top("top")
+            .frame(
+                egui::Frame::new()
+                    .fill(theme.surface)
+                    .inner_margin(egui::Margin::symmetric(12, 8))
+                    .stroke(egui::Stroke::new(1.0, theme.border)),
+            )
             .show(ui, |ui| {
-                ui.vertical(|ui| {
-                    ui.add_space(6.0);
-
-                    ui.horizontal(|ui| {
-                        ui.add_space(6.0);
-                        let actions = {
-                            let main = MainWindow::new(
-                                &self.skin,
-                                &self.textures,
-                                &self.theme,
-                                self.scale,
-                            );
-                            main.show(ui, &self.main_window_state())
-                        };
-                        self.handle_main_window(actions);
-                    });
-
-                    ui.add_space(6.0);
-                    self.show_browser(ui);
-                });
+                self.show_top_bar(ui, &theme);
             });
 
-        self.show_playlist_window(ui.ctx());
-        self.show_equalizer_window(ui.ctx());
+        egui::Panel::bottom("player")
+            .frame(
+                egui::Frame::new()
+                    .fill(theme.surface)
+                    .inner_margin(egui::Margin::symmetric(12, 8))
+                    .stroke(egui::Stroke::new(1.0, theme.border)),
+            )
+            .show(ui, |ui| {
+                let actions = PlayerBar {
+                    title: &self.title,
+                    artist: &self.artist,
+                    playing: self
+                        .engine
+                        .as_ref()
+                        .map(|engine| engine.state() == PlaybackState::Playing)
+                        .unwrap_or(false),
+                    paused: self
+                        .engine
+                        .as_ref()
+                        .map(|engine| engine.state() == PlaybackState::Paused)
+                        .unwrap_or(false),
+                    position: self
+                        .engine
+                        .as_ref()
+                        .map(|engine| engine.position())
+                        .unwrap_or(0.0),
+                    duration: self
+                        .engine
+                        .as_ref()
+                        .map(|engine| engine.duration())
+                        .unwrap_or(0.0),
+                    volume: self.volume,
+                    shuffle: self.shuffle,
+                    repeat: self.repeat != RepeatMode::Off,
+                    cover: self.cover.clone(),
+                }
+                .show(ui, &theme);
 
-        // Keep the visualizer and the time display up to date.
+                self.handle_player_actions(actions);
+            });
+
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::new()
+                    .fill(theme.background)
+                    .inner_margin(egui::Margin::symmetric(12, 10)),
+            )
+            .show(ui, |ui| {
+                self.show_list(ui, &theme);
+            });
+
+        self.show_equalizer_window(ui.ctx());
+        self.show_mini_player(ui.ctx());
+
+        // Keep the time display and the visualizer up to date.
         ui.ctx().request_repaint_after(Duration::from_millis(50));
     }
 }

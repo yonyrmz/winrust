@@ -1,17 +1,17 @@
 //! The winrust user interface.
 //!
-//! The crate provides the Winamp inspired main window, the YouTube Music
-//! browser and the playlist and equalizer windows.
+//! The crate provides the main window, the mini player, the equalizer and
+//! the two sources of music: a YouTube Music search and a local library.
 
 pub mod app;
-pub mod main_window;
-pub mod renderer;
+pub mod equalizer;
+pub mod icons;
+pub mod mini_player;
+pub mod player;
 pub mod state;
 pub mod theme;
 
-pub use app::WinrustApp;
-pub use main_window::{MainWindow, MainWindowActions, MainWindowState};
-pub use renderer::TextureCache;
+pub use app::{View, WinrustApp};
 pub use theme::Theme;
 
 /// Starts the winrust user interface.
@@ -19,8 +19,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let native_options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("winrust")
-            .with_inner_size([900.0, 640.0])
-            .with_min_inner_size([560.0, 420.0]),
+            .with_inner_size([1024.0, 680.0])
+            .with_min_inner_size([680.0, 480.0]),
         ..Default::default()
     };
 

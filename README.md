@@ -1,44 +1,43 @@
 # winrust
 
-**winrust** is a Winamp inspired music player written in Rust. It keeps the
-classic look and feel — the tiny window, the LED time display, the equalizer
-with its ten bands, the spectrum analyzer and the skinnable interface — and
-plays music straight from **YouTube Music**.
+**winrust** is a small desktop music player written in Rust. It plays music
+from **YouTube Music** and from your **local folders**, with a clean interface
+and a compact mini player.
 
 ```text
-┌──────────────────────────────────────────────┐
-│  ▓▓ winrust ▓▓   00:00   ▶ ▮▮  ♪ ♪ ♪  ▓▓▓▓  │
-│  ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  │
-│  [ search YouTube Music… ]  [Search]         │
-│  ──────────────────────────────────────────  │
-│  1. Artist — Title                    3:21   │
-│  2. Artist — Title                    4:02   │
-└──────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│ [ Search YouTube Music…      ] [Search]  Online Library Queue │
+├──────────────────────────────────────────────────────────────┤
+│                                                              │
+│   One More Time — Daft Punk                          5:21    │
+│   Instant Crush — Daft Punk                          4:38    │
+│                                                              │
+├──────────────────────────────────────────────────────────────┤
+│ [♪]  One More Time — Daft Punk        🔀 🔁 ⚙ ⇲   🔊 ▬▬▬▬    │
+│     ◀◀ ▶ ▶|   0:42 ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬  5:21      │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 ## Features
 
-- **Winamp look** — the main window is drawn from a skin, exactly like the
-  original: 275×116 pixels, LED digits, transport buttons, position bar,
-  volume and balance sliders.
-- **Skins** — loads classic `.wsz` archives (the ZIP format Winamp used). A
-  default skin is generated procedurally so no proprietary artwork has to be
-  shipped.
-- **YouTube Music** — search the catalogue and play it, powered by the
-  external `yt-dlp` binary.
-- **Real audio pipeline** — `cpal` for the output, `symphonia` for decoding
-  and `rubato` for sample rate conversion, with a ring buffer so playback
-  never glitches.
+- **Two sources** — search YouTube Music, or point it at your local folders.
+- **Mini player** — a compact always-on-top window with the essential
+  controls, so the player can get out of the way.
+- **Real audio pipeline** — `cpal` for the output, `symphonia` for decoding and
+  `rubato` for sample rate conversion, with a ring buffer so playback never
+  glitches.
 - **Ten band equalizer** — biquad peaking filters on the classic Winamp
-  frequencies (60 Hz … 16 kHz) with a preamp.
-- **Spectrum analyzer** — an FFT based visualizer fed by the live signal.
-- **Playlist** — queue management with a persistent, JSON backed store.
+  frequencies (60 Hz … 16 kHz) with a preamp, applied to the signal.
+- **Play queue** — add, remove and reorder the songs that play next.
+- **Cover art** — the thumbnails of YouTube Music and the tags of the local
+  files are shown next to the player.
 
 ## Requirements
 
 - A Rust toolchain (1.87 or newer).
 - [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) in `PATH`, if you want to
-  stream from YouTube Music.
+  stream from YouTube Music. The player starts without it, it only disables
+  the online search.
 
 ## Building and running
 
@@ -51,13 +50,15 @@ The binary is written to `target/release/winrust-app`.
 
 ## Using it
 
-1. Type a song, an artist or an album in the search box and press **Enter**.
-2. Double click a result to play it. The track is added to the playlist.
-3. Use the transport buttons of the main window to play, pause, stop and
-   skip.
-4. Click the **EQ** button to open the equalizer and the **PL** button to
-   open the playlist editor.
-5. Use **Load skin…** to load a `.wsz` archive.
+1. **Online** — type a song, an artist or an album in the search box and press
+   **Enter**. Double click a result to play it, or use the **+** button to
+   only add it to the queue.
+2. **Library** — press **Add folder…** and pick a directory. The folder is
+   scanned recursively, the tags are read and the tracks are listed. The
+   **Filter** box narrows the list by artist, album or title.
+3. **Queue** — the songs that will play next. Double click one to jump to it.
+4. Press the **mini player** button (⇲) to open the compact window; it stays
+   on top of the other windows.
 
 ### Keyboard shortcuts
 
@@ -68,6 +69,7 @@ The binary is written to `target/release/winrust-app`.
 | `Ctrl` + `Left` | Previous track |
 | `Ctrl` + `Up` / `Down` | Volume up / down |
 | `Ctrl` + `S` | Stop |
+| `Ctrl` + `Shift` + `S` | Save the settings |
 
 ## Project layout
 
@@ -77,22 +79,10 @@ crates/
 ├── winrust-audio/     # cpal output, symphonia decoding, ring buffer
 ├── winrust-dsp/       # equalizer, FFT visualizer, resampler helpers
 ├── winrust-ytmusic/   # yt-dlp wrapper: search and stream resolution
-├── winrust-skin/      # .wsz loader, sprite tables, default skin
-├── winrust-ui/        # egui interface: main window, browser, playlist, EQ
+├── winrust-library/   # local folder scanning and tag reading
+├── winrust-ui/        # egui interface: main window, mini player, library, EQ
 └── winrust-app/       # the executable
 ```
-
-## Legal notes
-
-- **winrust is not affiliated with Nullsoft or Winamp.** It is an independent
-  open source project that happens to share a look and a file format.
-- YouTube Music does not offer a public API for third party players. The
-  project therefore relies on `yt-dlp`, which is an external tool that is not
-  distributed with winrust. Depending on your jurisdiction, using it may
-  conflict with the terms of service of the platform. Use it responsibly.
-- No artwork from the original Winamp is bundled. The default skin is drawn
-  from scratch at runtime; third party `.wsz` skins are provided by the user
-  and remain the property of their authors.
 
 ## How the YouTube Music backend works
 
@@ -112,6 +102,15 @@ hours, so they are resolved again every time a track is played.
 YouTube sometimes answers with *"Sign in to confirm you're not a bot"*. In
 that case the error is shown in the interface; passing cookies to `yt-dlp`
 (for example with `--cookies-from-browser`) usually solves it.
+
+## Legal notes
+
+- YouTube Music does not offer a public API for third party players. The
+  project therefore relies on `yt-dlp`, which is an external tool that is not
+  distributed with winrust. Depending on your jurisdiction, using it may
+  conflict with the terms of service of the platform. Use it responsibly.
+- The project is not affiliated with Nullsoft or Winamp; it just happens to
+  share the same equalizer band layout.
 
 ## License
 

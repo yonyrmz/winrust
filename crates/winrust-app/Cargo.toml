@@ -13,7 +13,7 @@ winrust-core = { workspace = true }
 winrust-audio = { workspace = true }
 winrust-dsp = { workspace = true }
 winrust-ytmusic = { workspace = true }
-winrust-skin = { workspace = true }
+winrust-library = { workspace = true }
 winrust-ui = { workspace = true }
 
 anyhow = { workspace = true }

@@ -6,19 +6,21 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "The Winamp inspired user interface for winrust"
+description = "The winrust user interface"
 
 [dependencies]
 winrust-core = { workspace = true }
 winrust-audio = { workspace = true }
 winrust-dsp = { workspace = true }
-winrust-skin = { workspace = true }
 winrust-ytmusic = { workspace = true }
+winrust-library = { workspace = true }
 
 egui = "0.37"
 eframe = "0.37"
 rfd = "0.17"
 directories = "6"
+ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 tokio = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }

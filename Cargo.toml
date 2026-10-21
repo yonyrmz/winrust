@@ -5,7 +5,7 @@ members = [
     "crates/winrust-audio",
     "crates/winrust-dsp",
     "crates/winrust-ytmusic",
-    "crates/winrust-skin",
+    "crates/winrust-library",
     "crates/winrust-ui",
     "crates/winrust-app",
 ]
@@ -23,7 +23,7 @@ winrust-core = { path = "crates/winrust-core", version = "0.1.0" }
 winrust-audio = { path = "crates/winrust-audio", version = "0.1.0" }
 winrust-dsp = { path = "crates/winrust-dsp", version = "0.1.0" }
 winrust-ytmusic = { path = "crates/winrust-ytmusic", version = "0.1.0" }
-winrust-skin = { path = "crates/winrust-skin", version = "0.1.0" }
+winrust-library = { path = "crates/winrust-library", version = "0.1.0" }
 winrust-ui = { path = "crates/winrust-ui", version = "0.1.0" }
 
 anyhow = "1"
@@ -39,3 +39,4 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 strip = true
+

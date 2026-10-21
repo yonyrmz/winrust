@@ -1,72 +1,67 @@
-//! The colour theme derived from the loaded skin.
+//! The colour palette of the interface.
 
 use egui::Color32;
-use winrust_skin::Skin;
 
 /// The colours used by the interface.
 #[derive(Debug, Clone)]
 pub struct Theme {
-    /// Background of the panels.
+    /// The colour of the window background.
     pub background: Color32,
-    /// Background of the raised areas.
-    pub panel: Color32,
-    /// Background of the display areas.
-    pub display_background: Color32,
-    /// Border colour.
-    pub border: Color32,
-    /// Main text colour.
-    pub text: Color32,
-    /// Colour of the dimmed text.
-    pub dimmed: Color32,
-    /// Accent colour, used by the LEDs and the active states.
+    /// The colour of the cards and of the panels.
+    pub surface: Color32,
+    /// The colour of the alternating rows of a list.
+    pub surface_alt: Color32,
+    /// The accent colour, used by the active states.
     pub accent: Color32,
-    /// Colour of the playlist text.
-    pub playlist_text: Color32,
-    /// Colour of the text of the current track.
-    pub playlist_current: Color32,
-    /// Colour of the text of the selected track.
-    pub playlist_selected: Color32,
-    /// The 24 visualizer colours.
-    pub visualizer: [Color32; 24],
+    /// The colour of the text.
+    pub text: Color32,
+    /// The colour of the secondary text.
+    pub text_dim: Color32,
+    /// The colour of the borders.
+    pub border: Color32,
+    /// The colour of the errors.
+    pub warning: Color32,
+    /// The colour of the progress bars.
+    pub progress: Color32,
 }
 
 impl Theme {
-    /// Builds a theme from a skin.
-    pub fn from_skin(skin: &Skin) -> Self {
-        let playlist = &skin.playlist;
-        let general = &skin.general;
-        let visualizer = &skin.visualizer;
-
+    /// The dark palette.
+    pub fn dark() -> Self {
         Self {
-            background: Color32::from_rgb(0x18, 0x18, 0x18),
-            panel: Color32::from_rgb(0x30, 0x30, 0x30),
-            display_background: Color32::from_rgb(0x08, 0x08, 0x08),
-            border: Color32::from_rgb(0x55, 0x55, 0x55),
-            text: Color32::from_rgb(0xd0, 0xd0, 0xd0),
-            dimmed: Color32::from_rgb(0x80, 0x80, 0x80),
-            accent: crate::renderer::to_color32(general[0]),
-            playlist_text: crate::renderer::to_color32(playlist.foreground),
-            playlist_current: crate::renderer::to_color32(playlist.current),
-            playlist_selected: crate::renderer::to_color32(playlist.selected),
-            visualizer: std::array::from_fn(|index| {
-                crate::renderer::to_color32(visualizer[index % visualizer.len()])
-            }),
+            background: Color32::from_rgb(0x14, 0x15, 0x18),
+            surface: Color32::from_rgb(0x1c, 0x1e, 0x22),
+            surface_alt: Color32::from_rgb(0x22, 0x24, 0x29),
+            accent: Color32::from_rgb(0x6c, 0xa8, 0xff),
+            text: Color32::from_rgb(0xe6, 0xe8, 0xec),
+            text_dim: Color32::from_rgb(0x8b, 0x92, 0x9e),
+            border: Color32::from_rgb(0x2c, 0x2f, 0x36),
+            warning: Color32::from_rgb(0xff, 0x6b, 0x6b),
+            progress: Color32::from_rgb(0x3d, 0x6b, 0xa5),
         }
     }
 
-    /// Returns the colour of a visualizer bar.
-    pub fn visualizer_color(&self, index: usize, count: usize) -> Color32 {
-        if count == 0 {
-            return self.accent;
+    /// The light palette.
+    pub fn light() -> Self {
+        Self {
+            background: Color32::from_rgb(0xf4, 0xf5, 0xf7),
+            surface: Color32::from_rgb(0xff, 0xff, 0xff),
+            surface_alt: Color32::from_rgb(0xec, 0xee, 0xf2),
+            accent: Color32::from_rgb(0x1a, 0x6c, 0xd9),
+            text: Color32::from_rgb(0x1a, 0x1c, 0x20),
+            text_dim: Color32::from_rgb(0x6b, 0x72, 0x7d),
+            border: Color32::from_rgb(0xdc, 0xdf, 0xe4),
+            warning: Color32::from_rgb(0xc0, 0x2b, 0x2b),
+            progress: Color32::from_rgb(0x9a, 0xc0, 0xf0),
         }
-        let position = index as f32 / count as f32;
-        let slot = (position * (self.visualizer.len() - 1) as f32).round() as usize;
-        self.visualizer[slot % self.visualizer.len()]
     }
-}
 
-impl Default for Theme {
-    fn default() -> Self {
-        Self::from_skin(&winrust_skin::default_skin())
+    /// Returns the palette that matches the current egui visuals.
+    pub fn from_visuals(visuals: &egui::Visuals) -> Self {
+        if visuals.dark_mode {
+            Self::dark()
+        } else {
+            Self::light()
+        }
     }
 }
