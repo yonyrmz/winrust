@@ -301,16 +301,25 @@ impl WinrustApp {
             return;
         }
 
-        let next = match self.repeat {
-            RepeatMode::One => self.current_index,
-            _ => {
-                if self.current_index.map(|index| index + 1) == Some(self.queue.len()) {
-                    match self.repeat {
-                        RepeatMode::All => Some(0),
-                        _ => None,
+        let next = if self.shuffle && self.queue.len() > 1 {
+            // Pick another track at random, never the current one.
+            let mut index = self.current_index.unwrap_or(0);
+            while index == self.current_index.unwrap_or(usize::MAX) {
+                index = rand_index(self.queue.len());
+            }
+            Some(index)
+        } else {
+            match self.repeat {
+                RepeatMode::One => self.current_index,
+                _ => {
+                    if self.current_index.map(|index| index + 1) == Some(self.queue.len()) {
+                        match self.repeat {
+                            RepeatMode::All => Some(0),
+                            _ => None,
+                        }
+                    } else {
+                        self.current_index.map(|index| index + 1)
                     }
-                } else {
-                    self.current_index.map(|index| index + 1)
                 }
             }
         };
@@ -351,6 +360,10 @@ impl WinrustApp {
                     self.play_queue_index(index);
                 } else if !self.queue.is_empty() {
                     self.play_queue_index(0);
+                } else if !self.results.is_empty() {
+                    // Nothing is queued yet: start with the first result.
+                    let track = self.results[0].clone();
+                    self.enqueue_and_play(track);
                 }
             }
         }
@@ -553,6 +566,7 @@ impl WinrustApp {
                 }
 
                 let mut to_play: Option<usize> = None;
+                let mut to_add: Option<usize> = None;
                 egui::ScrollArea::vertical()
                     .max_height(220.0)
                     .show(ui, |ui| {
@@ -566,9 +580,23 @@ impl WinrustApp {
                                 if title.double_clicked() || artist.double_clicked() {
                                     to_play = Some(index);
                                 }
+                                if ui
+                                    .small_button("+")
+                                    .on_hover_text("Add to the playlist")
+                                    .clicked()
+                                {
+                                    to_add = Some(index);
+                                }
                             });
                         }
                     });
+
+                if let Some(index) = to_add {
+                    let track = self.results[index].clone();
+                    if !self.queue.iter().any(|item| item.id == track.id) {
+                        self.queue.push(track);
+                    }
+                }
 
                 if let Some(index) = to_play {
                     let track = self.results[index].clone();
@@ -793,6 +821,24 @@ impl WinrustApp {
             Err(err) => self.error = Some(format!("could not save the state: {err}")),
         }
     }
+}
+
+/// Picks a pseudo random index below `len`.
+///
+/// A small xorshift generator is used on purpose: it keeps the player free
+/// of a dependency on a random number generator for such a small need.
+fn rand_index(len: usize) -> usize {
+    if len <= 1 {
+        return 0;
+    }
+    let mut state = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.subsec_nanos() as u64)
+        .unwrap_or(0x9E37_79B9_7F4A_7C15);
+    state ^= state << 13;
+    state ^= state >> 7;
+    state ^= state << 17;
+    (state % len as u64) as usize
 }
 
 /// eframe glue.

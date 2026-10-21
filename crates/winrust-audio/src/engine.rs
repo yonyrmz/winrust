@@ -164,6 +164,11 @@ enum Command {
     SetVolume(f32),
     SetMuted(bool),
     Shutdown,
+    /// The decoder of a track finished.
+    ///
+    /// The generation identifies the decoder, so that a track that was
+    /// replaced or seeked away does not advance the queue.
+    Finished(u64),
 }
 
 /// The winrust audio engine.
@@ -229,9 +234,10 @@ impl AudioEngine {
 
         let engine_shared = Arc::clone(&shared);
         let engine_events = events.clone();
+        let engine_tx = commands.clone();
         let engine_thread = std::thread::Builder::new()
             .name("winrust-engine".to_string())
-            .spawn(move || engine_loop(command_rx, engine_shared, engine_events))
+            .spawn(move || engine_loop(command_rx, engine_tx, engine_shared, engine_events))
             .ok();
 
         Ok(Self {
@@ -374,9 +380,15 @@ impl Drop for AudioEngine {
 }
 
 /// The engine thread loop.
-fn engine_loop(commands: Receiver<Command>, shared: Arc<Shared>, events: Sender<PlayerEvent>) {
+fn engine_loop(
+    commands: Receiver<Command>,
+    command_tx: Sender<Command>,
+    shared: Arc<Shared>,
+    events: Sender<PlayerEvent>,
+) {
     let mut decoder: Option<DecoderHandle> = None;
     let mut current: Option<(Track, MediaSource)> = None;
+    let mut generation: u64 = 0;
 
     while let Ok(command) = commands.recv() {
         match command {
@@ -400,9 +412,12 @@ fn engine_loop(commands: Receiver<Command>, shared: Arc<Shared>, events: Sender<
                 let _ = events.send(PlayerEvent::StateChanged(PlaybackState::Playing));
                 let _ = events.send(PlayerEvent::TrackStarted(track.clone()));
 
+                generation = generation.wrapping_add(1);
                 let handle = spawn_decoder(
                     Arc::clone(&shared),
                     events.clone(),
+                    command_tx.clone(),
+                    generation,
                     source.clone(),
                     start_at,
                 );
@@ -433,7 +448,7 @@ fn engine_loop(commands: Receiver<Command>, shared: Arc<Shared>, events: Sender<
                 let _ = events.send(PlayerEvent::StateChanged(PlaybackState::Stopped));
             }
             Command::Seek(seconds) => {
-                let Some((track, source)) = current.clone() else {
+                let Some((_, source)) = current.clone() else {
                     continue;
                 };
                 if let Some(handle) = decoder.take() {
@@ -441,19 +456,27 @@ fn engine_loop(commands: Receiver<Command>, shared: Arc<Shared>, events: Sender<
                 }
                 shared.ring.clear();
                 shared.reset_position(seconds);
+                generation = generation.wrapping_add(1);
                 decoder = Some(spawn_decoder(
                     Arc::clone(&shared),
                     events.clone(),
+                    command_tx.clone(),
+                    generation,
                     source,
                     seconds,
                 ));
-                let _ = track;
             }
             Command::SetVolume(volume) => {
                 shared.params.lock().volume = volume.clamp(0.0, 1.0);
             }
             Command::SetMuted(muted) => {
                 shared.params.lock().muted = muted;
+            }
+            Command::Finished(decoder_generation) => {
+                // Only the decoder of the current track may advance the queue.
+                if decoder_generation == generation {
+                    let _ = events.send(PlayerEvent::TrackEnded);
+                }
             }
             Command::Shutdown => {
                 if let Some(handle) = decoder.take() {
@@ -494,6 +517,8 @@ impl Drop for DecoderHandle {
 fn spawn_decoder(
     shared: Arc<Shared>,
     events: Sender<PlayerEvent>,
+    command_tx: Sender<Command>,
+    generation: u64,
     source: MediaSource,
     start_at: f64,
 ) -> DecoderHandle {
@@ -503,10 +528,12 @@ fn spawn_decoder(
     let thread = std::thread::Builder::new()
         .name("winrust-decoder".to_string())
         .spawn(move || {
-            if let Err(err) = decode_loop(&shared, &events, &source, start_at, &stop_flag) {
+            if let Err(err) = decode_loop(&shared, &source, start_at, &stop_flag) {
                 tracing::error!("decoder failed: {err}");
                 let _ = events.send(PlayerEvent::Error(err.to_string()));
             }
+            // The engine thread decides whether the track really ended.
+            let _ = command_tx.send(Command::Finished(generation));
         })
         .ok();
 
@@ -516,7 +543,6 @@ fn spawn_decoder(
 /// The decoding loop.
 fn decode_loop(
     shared: &Arc<Shared>,
-    events: &Sender<PlayerEvent>,
     source: &MediaSource,
     start_at: f64,
     stop: &AtomicBool,
@@ -593,7 +619,6 @@ fn decode_loop(
         shared.ring.push(&buffer);
     }
 
-    let _ = events.send(PlayerEvent::TrackEnded);
     Ok(())
 }
 
